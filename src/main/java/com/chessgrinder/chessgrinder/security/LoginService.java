@@ -56,11 +56,17 @@ public class LoginService {
     public OidcUser loadOidcUser(OidcUserRequest userRequest) {
         OidcUser principal = oidcUserService.loadUser(userRequest);
         String email = principal.getAttribute("email");
-        String preferredUsertag = principal.getPreferredUsername();
-        String fullName = principal.getFullName();
-        if (fullName == null) {
-            fullName = principal.getAttribute("name");
-        }
+        String preferredUsertag = firstNonBlank(
+                principal.getPreferredUsername(),
+                principal.getAttribute("preferred_username"),
+                principal.getAttribute("username"),
+                principal.getAttribute("nickname")
+        );
+        String fullName = firstNonBlank(
+                principal.getFullName(),
+                principal.getAttribute("name"),
+                preferredUsertag
+        );
         UserEntity.Provider provider = LoginService.mapProvider(userRequest.getClientRegistration().getRegistrationId());
         UserEntity userEntity = loginOrRegister(email, preferredUsertag, fullName, null, provider);
         return CustomOidcUser.builder().delegate(principal).user(userEntity).build();
@@ -69,9 +75,17 @@ public class LoginService {
     public OAuth2User loadOauth2User(OAuth2UserRequest userRequest) throws OAuth2AuthenticationException {
         OAuth2User principal = oAuth2UserService.loadUser(userRequest);
         String email = principal.getAttribute("email");
-        String fullName = principal.getAttribute("name");
+        String preferredUsertag = firstNonBlank(
+                principal.getAttribute("preferred_username"),
+                principal.getAttribute("username"),
+                principal.getAttribute("nickname")
+        );
+        String fullName = firstNonBlank(
+                principal.getAttribute("name"),
+                preferredUsertag
+        );
         UserEntity.Provider provider = LoginService.mapProvider(userRequest.getClientRegistration().getRegistrationId());
-        UserEntity userEntity = loginOrRegister(email, null, fullName, null, provider);
+        UserEntity userEntity = loginOrRegister(email, preferredUsertag, fullName, null, provider);
         return CustomOAuth2User.builder().delegate(principal).user(userEntity).build();
     }
 
@@ -93,7 +107,7 @@ public class LoginService {
         if (preferredUsertag != null) {
             byUserTag = userRepository.findByUsertag(preferredUsertag);
         }
-        if (byUserTag != null && !Objects.equals(byUserTag.getId(), user.getId())) {
+        if (byUserTag != null && (user == null || !Objects.equals(byUserTag.getId(), user.getId()))) {
             preferredUsertag = null;
         }
         if (preferredUsertag != null && !preferredUsertag.matches(UserEntity.USERTAG_REGEX)) {
@@ -116,6 +130,7 @@ public class LoginService {
         }
         if (StringUtils.isBlank(user.getName()) && StringUtils.isNotBlank(preferredUsertag)) {
             user.setName(preferredUsertag);
+            user = userRepository.save(user);
         }
         // If logged-in provider is CHESSCOM and we have a preferred username, store it
         if (provider == UserEntity.Provider.CHESSCOM && StringUtils.isNotBlank(preferredUsertag)) {
@@ -166,6 +181,14 @@ public class LoginService {
             user = userRepository.findById(user.getId()).orElseThrow();
         }
         return user;
+    }
+
+    private static String firstNonBlank(String... values) {
+        return Arrays.stream(values)
+                .filter(Objects::nonNull)
+                .filter(StringUtils::isNotBlank)
+                .findFirst()
+                .orElse(null);
     }
 
 }
